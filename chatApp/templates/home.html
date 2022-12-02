@@ -1,0 +1,176 @@
+{% extends "base.html" %} {% load humanize %} {% load customfilter %} {% block pageContent %}
+
+<!--Section: Content-->
+<section class="">
+    <div class="row justify-content-center">
+        <div class="col-lg-5 col-md-8 col-sm-12 col-xs-12 card card-default rounded-0 shadow border border-dark">
+            <div class="card-body">
+                <div class="container-fluid">
+                    <h2 class="text-center fw-bold">Logged In as {{ request.session.logged_user }}</h2>
+                    <hr>
+                    <div class="position-relative">
+                        <div class="px-2 pt-4 pb-1 border border-gray-200">
+                            <div id="chat-holder" class="">
+                                {% for message in chats %}
+                                <div class="chat" data-id="{{ message.pk }}">{{ message.get_message|safe }}</div>
+                                {% endfor %}
+                                <div class="text-center text-muted d-none" id="load_more">Loading more old messages</div>
+                                <div class="text-center text-muted d-none" id="no_load">You Have Reach the oldest message</div>
+                            </div>
+                        </div>
+                        <div class="position-absolute w-100 text-center" style="bottom:20px">
+                            <a class="btn btn-primary bg-gradient py-1 px-2 text-center d-none" href="javascript:void(0)" id="scroll_bottom">New Message <i class="fa fa-angle-down"></i></a>
+                        </div>
+                    </div>
+                    <div id="form-field">
+                        <form action="" id="form-message">
+                            {% csrf_token %}
+                            <input type="hidden" name="username" value="{{ request.session.logged_user }}">
+                            <div class="d-flex w-100 justify-content-center align-items-center">
+                                <div class="col-auto flex-shrink-1 flex-grow-1 p-1">
+                                    <textarea name="message" id="message" cols="30" rows="3" autofocus class="form-control rounded-0" required="required" placeholder="Write your Message Here"></textarea>
+                                </div>
+                                <div class="col-auto h-100 p-1">
+                                    <button class="btn btn-primary rounded-0 h-100" title="send"><i class="fa fa-paper-plane"></i></button>
+                                </div>
+                            </div>
+                        </form>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+</div> {% endblock pageContent %} {% block ScriptBlock %}
+<script>
+    var ws = new WebSocket("ws://localhost:6023/")
+
+    function display_message($message, id, to = 'prepend') {
+        var p = $('<div>')
+        p.attr('data-id', id)
+        p.addClass('chat')
+        p.html($message)
+        if (to == 'prepend') {
+            if ($('#chat-holder').find('.chat').length > 0) {
+                $('#chat-holder').find('.chat').first().before(p)
+            } else {
+                $('#chat-holder').append(p);
+            }
+            if ($('#chat-holder').scrollTop() < -10)
+                $('#scroll_bottom').removeClass('d-none')
+        } else {
+            if ($('#chat-holder').find('.chat').length > 0) {
+                $('#chat-holder').find('.chat').last().after(p)
+            } else {
+                $('#chat-holder').append(p);
+            }
+        }
+    }
+    ws.addEventListener("message", event => {
+        data = $.parseJSON(event.data)
+        if (data.type == 'render_new') {
+            if ('{{ id }}' != data.id)
+                display_message(data.message, data.id);
+        }
+    })
+    ws.addEventListener('open', event => {
+        if ('{{ id }}' != '') {
+            ws.send(JSON.stringify({
+                "type": "new",
+                "id": '{{ id }}'
+            }))
+        }
+    })
+    var load_more = false;
+    var last_render_id;
+
+    $(function() {
+        $('#scroll_bottom').click(function() {
+            $('#chat-holder').scrollTop(0)
+            $(this).addClass('d-none')
+        })
+        last_render_id = $('#chat-holder').find('.chat').last().attr('data-id')
+        $('#message').keypress(function(e) {
+            if (e.which == 13 && e.shiftKey == false) {
+                e.preventDefault()
+                $('#form-message').submit()
+            }
+        })
+        var sending = false
+        $('#form-message').submit(function(e) {
+            e.preventDefault()
+            if (sending || $('#message').val() == '')
+                return false;
+            sending = true
+            var _this = $(this)
+            $.ajax({
+                url: '{% url "send_message" %}',
+                method: 'POST',
+                data: $(this).serialize(),
+                dataType: 'json',
+                error: err => {
+                    console.log('An error occured while sending message')
+                    alert("Sending Message Failed")
+                },
+                success: function(resp) {
+                    if (resp.status == 'success') {
+                        sending = false
+                        ws.send(JSON.stringify({
+                            "type": "new",
+                            "id": resp.id
+                        }))
+                        _this[0].reset()
+                        $('#message').focus()
+                    } else {
+                        console.log('An error occured while sending message')
+                        alert("Sending Message Failed")
+                    }
+                }
+            })
+        })
+
+        $('#chat-holder').on('scroll', function() {
+            if (!$('#no_load').hasClass('d-none'))
+                return false;
+            var scrollTop = $(this).scrollTop() < 0 ? -($(this).scrollTop()) : $(this).scrollTop()
+            if ((scrollTop + 1) > ($(this)[0].scrollHeight - $(this).outerHeight())) {
+                if (!!load_more)
+                    load_more.abort()
+                console.log(last_render_id)
+                $('#load_more').removeClass('d-none')
+                load_more = $.ajax({
+                    url: '{% url "load_more" %}/' + last_render_id,
+                    headers: {
+                        'X-CSRFToken': '{{ csrf_token }}'
+                    },
+                    dataType: 'JSON',
+                    error: err => {
+                        console.error(err)
+                            // alert("Loading more messages has failed")
+                    },
+                    success: function(resp) {
+                        if (resp.status == 'success') {
+                            if (Object.keys(resp.data).length > 0) {
+                                setTimeout(() => {
+                                    $('#load_more').addClass('d-none')
+                                    Object.keys(resp.data).map(k => {
+                                        if ($('#chat-holder').find('p.chat[data-id="' + resp.data[k].id + '"]').length < 1) {
+                                            display_message(resp.data[k].message, resp.data[k].id, 'append')
+                                            last_render_id = resp.data[k].id
+                                        }
+                                    })
+                                    $('#chat-holder').scrollTop($('#chat-holder').scrollTop() - 10)
+                                }, 2000)
+                            } else {
+                                $('#load_more').addClass('d-none')
+                                $('#no_load').removeClass('d-none')
+
+                            }
+                        }
+                    }
+                })
+            }
+        })
+    })
+</script>
+{% endblock ScriptBlock %}
